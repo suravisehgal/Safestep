@@ -2,9 +2,12 @@
 
 import { useState, useEffect, useRef } from 'react';
 import dynamic from 'next/dynamic';
-import { Search, Shield, AlertTriangle, MapPin, Loader2, Navigation, Crosshair, Car, Footprints, Bike } from 'lucide-react';
 import { getSafetyAnalysis, SafetyAnalysis } from './services/GeminiService';
 import { getRoute, RouteData } from './services/RouteService';
+import { useAuth } from './components/AuthProvider';
+import AuthModal from './components/AuthModal';
+import GuardianManager from './components/GuardianManager';
+import SafetyTimer from './components/SafetyTimer';
 
 // Dynamically import Map to avoid SSR issues
 const Map = dynamic(() => import('./components/MapComponent'), {
@@ -21,9 +24,15 @@ interface NominatimResult {
   lon: string;
 }
 
-
 export default function Home() {
-  console.log("Environment Check - Key Loaded:", !!process.env.NEXT_PUBLIC_GEMINI_API_KEY);
+  const { user } = useAuth();
+
+  // App State
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [showGuardians, setShowGuardians] = useState(false);
+  const [safetyTimerActive, setSafetyTimerActive] = useState(false);
+
+  // Map & Routing State
   const [origin, setOrigin] = useState('Current Location');
   const [destination, setDestination] = useState('');
   const [analysis, setAnalysis] = useState<SafetyAnalysis | null>(null);
@@ -46,13 +55,13 @@ export default function Home() {
   // Autocomplete State
   const [suggestions, setSuggestions] = useState<NominatimResult[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
+  const [activeInput, setActiveInput] = useState<'origin' | 'destination'>('destination');
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const sosTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const watchIdRef = useRef<number | null>(null);
 
-  // Get User Location
-  const [isLocating, setIsLocating] = useState(true);
-
+  // Initial Location
   useEffect(() => {
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
@@ -60,17 +69,44 @@ export default function Home() {
           const newPos: [number, number] = [position.coords.latitude, position.coords.longitude];
           setCenter(newPos);
           setUserLocation(newPos);
-          setIsLocating(false);
         },
         (error) => {
           console.error("Error getting location:", error);
-          setIsLocating(false); // Fallback to London
         }
       );
-    } else {
-      setIsLocating(false);
     }
   }, []);
+
+  // Watch Position for Dynamic ETA
+  useEffect(() => {
+    if (analysis && navigator.geolocation) {
+      watchIdRef.current = navigator.geolocation.watchPosition(
+        (position) => {
+          const newPos: [number, number] = [position.coords.latitude, position.coords.longitude];
+          setUserLocation(newPos);
+          // Only update path if we're actively routing? 
+          // For MVP, we won't re-fetch the route on every small move to save API, 
+          // but in production, we'd snap to route.
+        },
+        (error) => console.error("Watch Position Error:", error),
+        { enableHighAccuracy: true, maximumAge: 10000, timeout: 15000 }
+      );
+    }
+    return () => {
+      if (watchIdRef.current) navigator.geolocation.clearWatch(watchIdRef.current);
+    };
+  }, [analysis]);
+
+  const geocode = async (query: string): Promise<[number, number] | null> => {
+    try {
+      const res = await fetch(`${NOMINATIM_BASE_URL}?format=json&q=${encodeURIComponent(query)}&limit=1`);
+      const data = await res.json();
+      if (data && data.length > 0) {
+        return [parseFloat(data[0].lat), parseFloat(data[0].lon)];
+      }
+    } catch (e) { console.error(e); }
+    return null;
+  };
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -79,40 +115,65 @@ export default function Home() {
     setIsLoading(true);
     setAnalysis(null);
 
-    // Simulate "Thinking" time for premium feel if API is too fast
+    // Simulate "Thinking" time
     const minTime = new Promise(resolve => setTimeout(resolve, 1500));
 
-    // Use coordinates if default "Current Location" is selected, otherwise use text input
-    const startPointStr = (origin === 'Current Location' && userLocation)
-      ? `${userLocation[0]}, ${userLocation[1]}`
-      : origin;
+    let startCoords = userLocation;
+
+    // Handle Manual Origin
+    if (origin !== 'Current Location') {
+      const coords = await geocode(origin);
+      if (coords) {
+        startCoords = coords;
+        setUserLocation(coords); // Update "User Location" to manual start for routing
+        setCenter(coords);
+      }
+    }
+
+    if (!startCoords) {
+      setIsLoading(false);
+      alert("Could not determine start location");
+      return;
+    }
 
     try {
-      // Fetch All Routes Parallel
-      const [walkRoute, bikeRoute, driveRoute] = await Promise.all([
-        (userLocation && destinationLocation) ? getRoute(userLocation, destinationLocation, 'walking') : null,
-        (userLocation && destinationLocation) ? getRoute(userLocation, destinationLocation, 'cycling') : null,
-        (userLocation && destinationLocation) ? getRoute(userLocation, destinationLocation, 'driving') : null
-      ]);
+      // Logic for separate destination coordinate fetch if needed, 
+      // but usually destinationLocation is set by autocomplete click.
+      let endCoords = destinationLocation;
+      if (!endCoords) {
+        const coords = await geocode(destination);
+        if (coords) {
+          endCoords = coords;
+          setDestinationLocation(endCoords);
+        }
+      }
 
-      setRouteOptions({
-        walking: walkRoute,
-        cycling: bikeRoute,
-        driving: driveRoute
-      });
+      if (startCoords && endCoords) {
+        // Fetch All Routes Parallel
+        const [walkRoute, bikeRoute, driveRoute] = await Promise.all([
+          getRoute(startCoords, endCoords, 'walking'),
+          getRoute(startCoords, endCoords, 'cycling'),
+          getRoute(startCoords, endCoords, 'driving')
+        ]);
 
-      // Set initial path based on current mode (default walking)
-      const currentRoute = travelMode === 'walking' ? walkRoute : travelMode === 'cycling' ? bikeRoute : driveRoute;
-      if (currentRoute) setRoutePath(currentRoute.coordinates);
+        setRouteOptions({
+          walking: walkRoute,
+          cycling: bikeRoute,
+          driving: driveRoute
+        });
 
-      // Note: If origin is typed manually (not current location), we ideally need coordinates. 
-      // For this demo, we rely on userLocation being set for OSRM, or simple straight line fallback if no route.
+        // Set initial path
+        const currentRoute = travelMode === 'walking' ? walkRoute : travelMode === 'cycling' ? bikeRoute : driveRoute;
+        if (currentRoute) setRoutePath(currentRoute.coordinates);
+      }
 
       const [result] = await Promise.all([
-        getSafetyAnalysis(startPointStr, destination, travelMode),
+        getSafetyAnalysis(origin, destination, travelMode),
         minTime
       ]);
       setAnalysis(result);
+      if (user) setSafetyTimerActive(true); // Auto-start timer if logged in
+
     } catch (error) {
       console.error(error);
     } finally {
@@ -124,37 +185,56 @@ export default function Home() {
     setTravelMode(mode);
     setAnalysis(prev => prev ? { ...prev, tip: "Updating for " + mode + "..." } : null); // Optimistic UI
 
-    // Trigger new API call for the selected mode
-    if (userLocation && destinationLocation) {
-      try {
-        const newRoute = await getRoute(userLocation, destinationLocation, mode);
-        if (newRoute) {
-          setRouteOptions(prev => ({ ...prev, [mode]: newRoute }));
-          setRoutePath(newRoute.coordinates);
-        }
-      } catch (error) {
-        console.error("Failed to update route on mode switch:", error);
-        // Fallback to existing if available
-        if (routeOptions[mode]) {
-          setRoutePath(routeOptions[mode]!.coordinates);
-        }
-      }
-    } else if (routeOptions[mode]) {
+    if (routeOptions[mode]) {
       setRoutePath(routeOptions[mode]!.coordinates);
     }
 
-    // Re-run analysis for new mode
+    // Trigger new API call for safety analysis
     if (destination) {
-      // setIsLoading(true); // Don't block whole UI, just show updating status
-      const startPointStr = (origin === 'Current Location' && userLocation)
-        ? `${userLocation[0]}, ${userLocation[1]}`
-        : origin;
-
       try {
-        const result = await getSafetyAnalysis(startPointStr, destination, mode);
+        const result = await getSafetyAnalysis(origin, destination, mode);
         setAnalysis(result);
       } catch (e) { console.error(e); }
     }
+  };
+
+  // Autocomplete Logic
+  const handleInput = (value: string, type: 'origin' | 'destination') => {
+    if (type === 'origin') setOrigin(value);
+    else setDestination(value);
+
+    setActiveInput(type);
+
+    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+    searchTimeoutRef.current = setTimeout(async () => {
+      if (value.length > 2 && value !== 'Current Location') {
+        try {
+          const lat = center[0];
+          const lon = center[1];
+          const viewbox = `${lon - 0.5},${lat + 0.5},${lon + 0.5},${lat - 0.5}`;
+          const res = await fetch(`${NOMINATIM_BASE_URL}?format=json&q=${encodeURIComponent(value)}&limit=5&viewbox=${viewbox}&bounded=1`);
+          const data = await res.json();
+          setSuggestions(data);
+          setShowSuggestions(true);
+        } catch (err) { console.error(err); }
+      } else {
+        setSuggestions([]);
+        setShowSuggestions(false);
+      }
+    }, 300);
+  };
+
+  const handleSuggestionClick = (place: NominatimResult) => {
+    if (activeInput === 'origin') {
+      setOrigin(place.display_name);
+      // We'd ideally wait to set userLocation until Search is clicked or set it here?
+      // For now, let Search handle the geocode confirmation or do it lazily.
+    } else {
+      setDestination(place.display_name);
+      setDestinationLocation([parseFloat(place.lat), parseFloat(place.lon)]);
+      setCenter([parseFloat(place.lat), parseFloat(place.lon)]);
+    }
+    setShowSuggestions(false);
   };
 
   // SOS Button Logic
@@ -162,7 +242,7 @@ export default function Home() {
     setIsHoldingSOS(true);
     sosTimerRef.current = setTimeout(() => {
       triggerSOS();
-    }, 2000); // 2 seconds hold
+    }, 2000);
   };
 
   const cancelSOS = () => {
@@ -176,144 +256,138 @@ export default function Home() {
   const triggerSOS = () => {
     setSosActive(true);
     setIsHoldingSOS(false);
-    // Vibrate device if supported
     if (navigator.vibrate) navigator.vibrate([500, 200, 500]);
-
-    // Auto-hide alert after 5 seconds for demo
     setTimeout(() => setSosActive(false), 5000);
   };
 
-  return (
-    <main className="relative h-screen w-full bg-slate-900 overflow-hidden flex flex-col">
+  const formatArrival = (seconds: number) => {
+    const now = new Date();
+    now.setSeconds(now.getSeconds() + seconds);
+    return now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
 
-      {/* Map Layer */}
+  return (
+    <main className="relative h-screen w-full bg-slate-900 overflow-hidden flex flex-col font-sans">
+
+      {/* Auth Modal */}
+      {showAuthModal && <AuthModal onClose={() => setShowAuthModal(false)} />}
+
+      {/* Safety Timer Overlay */}
+      <SafetyTimer
+        isActive={safetyTimerActive}
+        onStop={() => setSafetyTimerActive(false)}
+        onTriggerSOS={triggerSOS}
+      />
+
       {/* Map Layer */}
       <div className="absolute inset-0 z-0">
         <Map center={center} userLocation={userLocation} destinationLocation={destinationLocation} routePath={routePath} />
+      </div>
 
-        {/* Initial Location Loader Overlay */}
-        {isLocating && (
-          <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-900">
-            <div className="flex flex-col items-center">
-              <Loader2 className="h-10 w-10 text-neon-mint animate-spin mb-3" />
-              <p className="text-slate-400 text-sm tracking-wider animate-pulse">Locating you...</p>
+      {/* Top Bar: Auth & User Status */}
+      <div className="absolute top-4 right-4 z-20 flex gap-2">
+        {user ? (
+          <>
+            <button
+              onClick={() => setShowGuardians(!showGuardians)}
+              className="bg-slate-800/90 text-white p-2 rounded-full shadow-lg border border-slate-700 hover:bg-slate-700 transition"
+              title="Manage Guardians"
+            >
+              <span className="material-symbols-outlined">verified_user</span>
+            </button>
+            <div className="bg-slate-800/90 text-neon-mint px-3 py-2 rounded-full shadow-lg border border-slate-700 flex items-center gap-2 text-xs font-bold">
+              <span className="material-symbols-outlined text-sm">smart_toy</span>
+              AI SECURED
             </div>
-          </div>
+          </>
+        ) : (
+          <button
+            onClick={() => setShowAuthModal(true)}
+            className="bg-neon-mint text-slate-900 px-4 py-2 rounded-full font-bold shadow-lg hover:bg-emerald-400 transition flex items-center gap-1"
+          >
+            <span className="material-symbols-outlined text-sm">login</span>
+            Login
+          </button>
         )}
       </div>
 
-      {/* Overlay: Top Search Bar */}
-      <div className="relative z-10 p-4 pt-12 bg-gradient-to-b from-slate-900/90 to-transparent pointer-events-none">
-        <form onSubmit={handleSearch} className="relative max-w-md mx-auto pointer-events-auto space-y-2">
+      {/* Guardians Panel */}
+      {showGuardians && (
+        <div className="absolute top-16 right-4 z-20 w-72 animate-in slide-in-from-top-4">
+          <GuardianManager />
+        </div>
+      )}
+
+      {/* Search Bar */}
+      <div className="relative z-10 p-4 pt-12 pointer-events-none">
+        <form onSubmit={handleSearch} className="relative max-w-md mx-auto pointer-events-auto space-y-2 bg-slate-900/80 backdrop-blur-md p-4 rounded-3xl border border-slate-700 shadow-2xl">
+
           {/* Origin Input */}
-          <div className="relative group">
-            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-              <Navigation className="h-5 w-5 text-slate-400" />
-            </div>
+          <div className="relative flex items-center border-b border-slate-700/50 pb-2">
+            <span className="material-symbols-outlined text-slate-400 w-8">my_location</span>
             <input
               type="text"
-              className="block w-full pl-10 pr-10 py-3 border border-slate-700 rounded-2xl leading-5 bg-slate-800/80 backdrop-blur-md text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:border-transparent transition-all shadow-lg text-sm"
-              placeholder="Start Location"
+              className="w-full bg-transparent text-slate-100 placeholder-slate-500 text-sm focus:outline-none"
+              placeholder="Current Location"
               value={origin}
-              onChange={(e) => setOrigin(e.target.value)}
-            />
-            {/* Current Location Button */}
-            <button
-              type="button"
-              onClick={() => {
-                setOrigin("Current Location");
-                if (userLocation) setCenter(userLocation);
+              onChange={(e) => handleInput(e.target.value, 'origin')}
+              onFocus={() => {
+                setActiveInput('origin');
+                if (suggestions.length > 0) setShowSuggestions(true);
               }}
-              className="absolute right-3 top-3 text-slate-400 hover:text-neon-mint transition-colors"
-              title="Use Current Location"
-            >
-              <Crosshair className="h-5 w-5" />
-            </button>
+              onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
+            />
           </div>
 
-          <div className="relative group">
-            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-              <Search className="h-5 w-5 text-neon-mint" />
-            </div>
+          {/* Destination Input */}
+          <div className="relative flex items-center pt-2">
+            <span className="material-symbols-outlined text-neon-mint w-8">location_on</span>
             <input
               type="text"
-              className="block w-full pl-10 pr-16 py-3 border border-slate-700 rounded-2xl leading-5 bg-slate-800/80 backdrop-blur-md text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-neon-mint focus:border-transparent transition-all shadow-lg"
-              placeholder="Where are you going?"
+              className="w-full bg-transparent text-slate-100 placeholder-slate-500 text-sm focus:outline-none font-semibold"
+              placeholder="Where to?"
               value={destination}
-              onChange={(e) => {
-                setDestination(e.target.value);
-                // Debounce Suggestion Fetch
-                if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
-                searchTimeoutRef.current = setTimeout(async () => {
-                  if (e.target.value.length > 2) {
-                    try {
-                      // Calculate bounding box for ~50km bias
-                      // 1 deg lat is ~111km. 0.5 deg is ~55km.
-                      const lat = center[0];
-                      const lon = center[1];
-                      const viewbox = `${lon - 0.5},${lat + 0.5},${lon + 0.5},${lat - 0.5}`; // left,top,right,bottom
-
-                      const res = await fetch(`${NOMINATIM_BASE_URL}?format=json&q=${encodeURIComponent(e.target.value)}&limit=5&viewbox=${viewbox}&bounded=1`);
-                      const data = await res.json();
-                      setSuggestions(data);
-                      setShowSuggestions(true);
-                    } catch (err) {
-                      console.error("Autocomplete Error:", err);
-                    }
-                  } else {
-                    setSuggestions([]);
-                    setShowSuggestions(false);
-                  }
-                }, 300);
+              onChange={(e) => handleInput(e.target.value, 'destination')}
+              onFocus={() => {
+                setActiveInput('destination');
+                if (suggestions.length > 0) setShowSuggestions(true);
               }}
-              onFocus={() => { if (suggestions.length > 0) setShowSuggestions(true); }}
-              onBlur={() => setTimeout(() => setShowSuggestions(false), 200)} // Delay to allow click
+              onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
             />
-
-            {/* Suggestions Dropdown */}
-            {showSuggestions && suggestions.length > 0 && (
-              <div className="absolute top-full left-0 right-0 mt-2 bg-slate-800/95 backdrop-blur-md border border-slate-700 rounded-xl shadow-xl overflow-hidden z-50">
-                <ul>
-                  {suggestions.map((place) => (
-                    <li
-                      key={place.place_id}
-                      className="px-4 py-3 hover:bg-slate-700/50 cursor-pointer text-slate-300 text-sm border-b border-slate-700/50 last:border-0 transition-colors flex items-start"
-                      onClick={() => {
-                        setDestination(place.display_name);
-                        setShowSuggestions(false);
-                        const newLat = parseFloat(place.lat);
-                        const newLon = parseFloat(place.lon);
-                        setDestinationLocation([newLat, newLon]);
-                        setCenter([newLat, newLon]);
-                      }}
-                    >
-                      <MapPin className="h-4 w-4 mt-0.5 mr-2 text-neon-mint shrink-0" />
-                      <span className="truncate">{place.display_name}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
             <button
               type="submit"
               disabled={isLoading}
-              className="absolute right-2 top-2 bottom-2 bg-neon-mint text-slate-900 px-4 rounded-xl font-bold text-sm hover:bg-emerald-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="bg-neon-mint text-slate-900 p-2 rounded-xl hover:bg-emerald-400 transition-colors disabled:opacity-50 ml-2"
             >
-              {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Go'}
+              {isLoading ? <span className="material-symbols-outlined animate-spin">refresh</span> : <span className="material-symbols-outlined">arrow_forward</span>}
             </button>
           </div>
+
+          {/* Suggestions Dropdown */}
+          {showSuggestions && suggestions.length > 0 && (
+            <div className="absolute top-full left-0 right-0 mt-2 bg-slate-800 border border-slate-700 rounded-xl shadow-xl overflow-hidden z-50">
+              <ul>
+                {suggestions.map((place) => (
+                  <li
+                    key={place.place_id}
+                    className="px-4 py-3 hover:bg-slate-700 cursor-pointer text-slate-300 text-sm border-b border-slate-700/50 flex items-start"
+                    onClick={() => handleSuggestionClick(place)}
+                  >
+                    <span className="material-symbols-outlined text-sm mr-2 mt-0.5 text-slate-400">place</span>
+                    <span className="truncate">{place.display_name}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </form>
       </div>
 
       {/* Loading Overlay */}
       {isLoading && (
         <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-300">
-          <div className="relative">
-            <div className="absolute inset-0 bg-neon-mint/30 blur-xl rounded-full"></div>
-            <Loader2 className="h-16 w-16 text-neon-mint animate-spin relative z-10" />
-          </div>
-          <p className="mt-4 text-neon-mint font-semibold text-lg tracking-wide animate-pulse">Running Safety Analysis...</p>
+          <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-neon-mint"></div>
+          <p className="mt-4 text-neon-mint font-semibold text-lg tracking-wide animate-pulse">Analyzing Route Safety...</p>
         </div>
       )}
 
@@ -321,63 +395,72 @@ export default function Home() {
       {sosActive && (
         <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-50 w-full max-w-sm px-4">
           <div className="bg-red-600 text-white rounded-3xl p-6 shadow-2xl border-2 border-red-400 animate-bounce text-center">
-            <AlertTriangle className="h-12 w-12 mx-auto mb-2 text-white fill-current" />
+            <span className="material-symbols-outlined text-6xl mb-2">warning</span>
             <h2 className="text-2xl font-bold mb-1">SOS SENT!</h2>
-            <p className="text-red-100">Alert sent to trusted contacts.</p>
+            <p className="text-red-100">Alert sent to guardians.</p>
           </div>
         </div>
       )}
 
-      {/* Bottom Sheet / Controls */}
+      {/* Bottom Information Card */}
       <div className="mt-auto relative z-10 p-4 pb-8 bg-gradient-to-t from-slate-900 via-slate-900/90 to-transparent pointer-events-none">
         <div className="max-w-md mx-auto space-y-4 pointer-events-auto">
-
-
-          {/* Safety Card (if analysis exists) */}
           {analysis && !isLoading && (
             <div className="bg-slate-800/90 backdrop-blur-md rounded-3xl p-5 border border-slate-700 shadow-xl animate-in slide-in-from-bottom duration-500">
 
-              {/* Mode Selector */}
+              {/* Mode Selector & ETA */}
               <div className="flex justify-between items-center mb-4 bg-slate-900/50 rounded-xl p-1">
                 {[
-                  { id: 'walking', icon: Footprints, label: 'Walk', time: routeOptions.walking ? Math.round(routeOptions.walking.duration / 60) + ' m' : (isLoading ? '...' : '-') },
-                  { id: 'cycling', icon: Bike, label: 'Bike', time: routeOptions.cycling ? Math.round(routeOptions.cycling.duration / 60) + ' m' : (isLoading ? '...' : '-') },
-                  { id: 'driving', icon: Car, label: 'Car', time: routeOptions.driving ? Math.round(routeOptions.driving.duration / 60) + ' m' : (isLoading ? '...' : '-') },
+                  { id: 'walking', icon: 'directions_walk', label: 'Walk' },
+                  { id: 'cycling', icon: 'directions_bike', label: 'Bike' },
+                  { id: 'driving', icon: 'directions_car', label: 'Car' },
                 ].map((mode) => (
                   <button
                     key={mode.id}
-                    onClick={() => switchMode(mode.id as 'walking' | 'cycling' | 'driving')}
+                    onClick={() => switchMode(mode.id as any)}
                     className={`flex-1 flex flex-col items-center py-2 rounded-lg transition-all ${travelMode === mode.id ? 'bg-slate-700 text-neon-mint shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
                   >
-                    <mode.icon className="h-5 w-5 mb-1" />
+                    <span className="material-symbols-outlined mb-1">{mode.icon}</span>
                     <span className="text-[10px] uppercase font-bold tracking-wider">{mode.label}</span>
-                    <span className="text-xs font-mono">{mode.time}</span>
+                    <span className="text-xs font-mono">
+                      {routeOptions[mode.id] ? Math.round(routeOptions[mode.id]!.duration / 60) + ' m' : '-'}
+                    </span>
                   </button>
                 ))}
               </div>
 
-              <div className="flex items-start justify-between">
+              {/* Arrival Time */}
+              <div className="text-center mb-4">
+                <p className="text-slate-400 text-xs uppercase tracking-widest">Expected Arrival</p>
+                <p className="text-2xl font-bold text-white">
+                  {routeOptions[travelMode] ? formatArrival(routeOptions[travelMode]!.duration) : '--:--'}
+                </p>
+              </div>
+
+              <div className="flex items-start justify-between border-t border-slate-700 pt-4">
                 <div>
-                  <h3 className="text-slate-400 text-xs font-semibold uppercase tracking-wider mb-1">Safety Analysis</h3>
+                  <h3 className="text-slate-400 text-xs font-semibold uppercase tracking-wider mb-1">AI Safety Score</h3>
                   <div className="flex items-baseline space-x-2">
                     <span className={`text-4xl font-black ${analysis.score >= 8 ? 'text-neon-mint' : analysis.score >= 5 ? 'text-yellow-400' : 'text-red-500'}`}>
                       {analysis.score}
                     </span>
                     <span className="text-slate-400 text-sm">/ 10</span>
                   </div>
-                  {/* Real-time vs Offline Badge */}
-                  <div className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold mt-1 ${analysis.isMock ? 'bg-yellow-900/50 text-yellow-400 border border-yellow-700/50' : 'bg-green-900/50 text-green-400 border border-green-700/50'}`}>
-                    {analysis.isMock ? '⚠️ EST' : '🟢 AI LIVE'}
-                  </div>
                 </div>
                 <div className="p-3 bg-slate-700/50 rounded-2xl">
-                  <Shield className={`h-8 w-8 ${analysis.score >= 8 ? 'text-neon-mint' : analysis.score >= 5 ? 'text-yellow-400' : 'text-red-500'}`} />
+                  <span className={`material-symbols-outlined text-4xl ${analysis.score >= 8 ? 'text-neon-mint' : analysis.score >= 5 ? 'text-yellow-400' : 'text-red-500'}`}>
+                    {analysis.score >= 8 ? 'verified_user' : 'gpp_maybe'}
+                  </span>
                 </div>
               </div>
-              <p className="mt-3 text-slate-300 text-sm leading-relaxed border-t border-slate-700 pt-3">
-                <span className="text-neon-mint mr-2">Tip:</span>
+
+              <div className="mt-3 text-slate-300 text-sm leading-relaxed bg-slate-700/30 p-3 rounded-xl border border-slate-700/50">
+                <span className="text-neon-mint mr-2 font-bold flex items-center gap-1 mb-1">
+                  <span className="material-symbols-outlined text-sm">psychology</span>
+                  AI Analysis:
+                </span>
                 {analysis.tip}
-              </p>
+              </div>
             </div>
           )}
 
@@ -393,11 +476,8 @@ export default function Home() {
                 relative group flex items-center justify-center rounded-full shadow-lg transition-all duration-300 select-none
                 ${isHoldingSOS ? 'w-24 h-24 bg-red-600 scale-110' : 'w-20 h-20 bg-red-500 hover:bg-red-600'}
               `}
-              aria-label="SOS Button"
             >
-              {/* Ripple Effect Ring */}
               <div className={`absolute inset-0 rounded-full border-4 border-red-500/50 ${isHoldingSOS ? 'animate-ping' : 'opacity-0'}`}></div>
-
               <span className={`font-black text-white ${isHoldingSOS ? 'text-xs' : 'text-xl'}`}>
                 {isHoldingSOS ? 'HOLD...' : 'SOS'}
               </span>
