@@ -11,9 +11,6 @@ const icon = L.icon({
     iconAnchor: [12, 41]
 });
 
-// Convert OSRM duration to minutes
-const convertDurationToMinutes = (duration: number) => Math.round(duration / 60);
-
 // Helper to control map view (Center vs Route)
 function MapController({ center, routePath }: { center: [number, number], routePath?: [number, number][] | null }) {
     const map = useMap();
@@ -21,14 +18,16 @@ function MapController({ center, routePath }: { center: [number, number], routeP
     useEffect(() => {
         if (!map) return; // Guard against undefined map
         
-        if (routePath && routePath.length > 0) {
-            // If route exists, fit bounds to show full path
-            const bounds = L.latLngBounds(routePath);
-            map.fitBounds(bounds, { padding: [50, 50] });
-        } else {
-            // If no route, just fly to the center (User Location or Search Result)
-            map.flyTo(center, 15, { duration: 1.5 });
-        }
+        map.whenReady(() => {
+            if (routePath && routePath.length > 0) {
+                // If route exists, fit bounds to show full path
+                const bounds = L.latLngBounds(routePath);
+                map.fitBounds(bounds, { padding: [50, 50] });
+            } else {
+                // If no route, just fly to the center (User Location or Search Result)
+                map.flyTo(center, 15, { duration: 1.5 });
+            }
+        });
     }, [center, routePath, map]);
 
     return null;
@@ -48,7 +47,6 @@ export default function MapComponent({
 
     return (
         <MapContainer
-            key="safestep-map" // Prevent "Map container is being reused" error
             center={center}
             zoom={13}
             className="h-full w-full z-0 block"

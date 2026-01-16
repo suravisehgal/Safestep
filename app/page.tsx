@@ -23,6 +23,7 @@ interface NominatimResult {
 
 
 export default function Home() {
+  console.log("Environment Check - Key Loaded:", !!process.env.NEXT_PUBLIC_GEMINI_API_KEY);
   const [origin, setOrigin] = useState('Current Location');
   const [destination, setDestination] = useState('');
   const [analysis, setAnalysis] = useState<SafetyAnalysis | null>(null);
@@ -123,8 +124,22 @@ export default function Home() {
     setTravelMode(mode);
     setAnalysis(prev => prev ? { ...prev, tip: "Updating for " + mode + "..." } : null); // Optimistic UI
 
-    // Update Map Path
-    if (routeOptions[mode]) {
+    // Trigger new API call for the selected mode
+    if (userLocation && destinationLocation) {
+      try {
+        const newRoute = await getRoute(userLocation, destinationLocation, mode);
+        if (newRoute) {
+          setRouteOptions(prev => ({ ...prev, [mode]: newRoute }));
+          setRoutePath(newRoute.coordinates);
+        }
+      } catch (error) {
+        console.error("Failed to update route on mode switch:", error);
+        // Fallback to existing if available
+        if (routeOptions[mode]) {
+          setRoutePath(routeOptions[mode]!.coordinates);
+        }
+      }
+    } else if (routeOptions[mode]) {
       setRoutePath(routeOptions[mode]!.coordinates);
     }
 
@@ -331,7 +346,7 @@ export default function Home() {
                 ].map((mode) => (
                   <button
                     key={mode.id}
-                    onClick={() => switchMode(mode.id as any)}
+                    onClick={() => switchMode(mode.id as 'walking' | 'cycling' | 'driving')}
                     className={`flex-1 flex flex-col items-center py-2 rounded-lg transition-all ${travelMode === mode.id ? 'bg-slate-700 text-neon-mint shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
                   >
                     <mode.icon className="h-5 w-5 mb-1" />

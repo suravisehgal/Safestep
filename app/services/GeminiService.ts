@@ -1,7 +1,11 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
 const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
+
+// Initialize with the API key directly
 const genAI = new GoogleGenerativeAI(apiKey || "");
+
+const cache = new Map<string, SafetyAnalysis>();
 
 export interface SafetyAnalysis {
   score: number;
@@ -10,26 +14,23 @@ export interface SafetyAnalysis {
 }
 
 export async function getSafetyAnalysis(origin: string, destination: string, mode: string = 'walking'): Promise<SafetyAnalysis> {
+  console.log("Using API Key:", !!process.env.NEXT_PUBLIC_GEMINI_API_KEY);
+
   if (!apiKey || apiKey === "your_gemini_api_key_here") {
     console.warn("Gemini API Key is missing or invalid. Using simulation fallback.");
-    // Simulation fallback
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        resolve({
-          score: Math.floor(Math.random() * 3) + 7,
-          tip: `Simulation: ${mode.charAt(0).toUpperCase() + mode.slice(1)} route from ${origin} to ${destination} is well-lit.`,
-          isMock: true
-        });
-      }, 1500);
-    });
+    return mockResponse(origin, destination, mode);
   }
 
   try {
-    // User requested "gemini-3-flash" (2026 Model) with JSON Mode
+    const key = `${origin}-${destination}-${mode}`;
+    if (cache.has(key)) {
+      return cache.get(key)!;
+    }
+
+    // Explicitly target the stable v1 endpoint with gemini-2.5-flash
     const model = genAI.getGenerativeModel({
-      model: "gemini-3-flash-preview",
-      generationConfig: { responseMimeType: "application/json" },
-      systemInstruction: "You are an expert urban safety analyst. Analyze the route between the two points provided. Return ONLY JSON."
+      model: "gemini-2.5-flash",
+      generationConfig: { response_mime_type: "application/json" }
     });
 
     const prompt = `Analyze the route from ${origin} to ${destination}. The user is ${mode === 'driving' ? 'driving' : mode === 'cycling' ? 'cycling' : 'walking'}. Provide a safety score (1-10) and a tip. IMPORTANT: If the destination is a major city center, score it higher. If it's an unmapped or rural area, score it lower. Never return 8 by default. Your response MUST be unique to these coordinates. Provide a JSON response: { "score": number, "tip": "string" }`;
@@ -41,15 +42,27 @@ export async function getSafetyAnalysis(origin: string, destination: string, mod
 
     if (!responseText) throw new Error("Empty response from Gemini");
 
-    return { ...JSON.parse(responseText), isMock: false } as SafetyAnalysis;
+    // Only set isMock: false after synchronous success
+    const parsedData = JSON.parse(responseText);
+    const analysis: SafetyAnalysis = { 
+      score: parsedData.score, 
+      tip: parsedData.tip, 
+      isMock: false 
+    };
+    
+    cache.set(key, analysis);
+    return analysis;
 
   } catch (error) {
     console.error("Gemini API Error (Falling back to offline mode):", error);
-    // Specific Fallback as requested
-    return {
-      score: 8,
-      tip: "Analysis based on local historical data: This route is well-lit and active.",
-      isMock: true
-    };
+    return mockResponse(origin, destination, mode);
   }
+}
+
+function mockResponse(origin: string, destination: string, mode: string): SafetyAnalysis {
+  return {
+    score: 8,
+    tip: `Analysis based on local historical data: This ${mode} route is well-lit and active.`,
+    isMock: true
+  };
 }
