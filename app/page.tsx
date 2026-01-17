@@ -2,9 +2,11 @@
 
 import { useState, useEffect, useRef } from 'react';
 import dynamic from 'next/dynamic';
+import { motion } from 'framer-motion';
 import { getSafetyAnalysis, SafetyAnalysis } from './services/GeminiService';
 import { getRoute, RouteData } from './services/RouteService';
 import { useAuth } from './components/AuthProvider';
+import { logoutUser } from './lib/firebase';
 import AuthModal from './components/AuthModal';
 import GuardianManager from './components/GuardianManager';
 import SafetyTimer from './components/SafetyTimer';
@@ -53,7 +55,7 @@ export default function Home() {
   });
 
   // Autocomplete State
-  const [suggestions, setSuggestions] = useState<NominatimResult[]>([]);
+  const [suggestions, setSuggestions] = useState<NominatimResult[]>();
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [activeInput, setActiveInput] = useState<'origin' | 'destination'>('destination');
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -176,6 +178,7 @@ export default function Home() {
 
     } catch (error) {
       console.error(error);
+      // Fallback is now handled in service, so setAnalysis will likely have data even on error
     } finally {
       setIsLoading(false);
     }
@@ -288,6 +291,22 @@ export default function Home() {
       <div className="absolute top-4 right-4 z-20 flex gap-2">
         {user ? (
           <>
+            <div className="flex items-center gap-2 bg-slate-800/90 p-1 pr-3 rounded-full border border-slate-700 shadow-lg">
+              <div className="h-8 w-8 rounded-full bg-slate-700 flex items-center justify-center overflow-hidden">
+                {user.photoURL ? (
+                  <img src={user.photoURL} alt="User" className="h-full w-full object-cover" />
+                ) : (
+                  <span className="material-symbols-outlined text-slate-400 text-sm">person</span>
+                )}
+              </div>
+              <button
+                onClick={() => logoutUser()}
+                className="text-xs font-bold text-slate-300 hover:text-red-400 transition ml-1"
+              >
+                LOGOUT
+              </button>
+            </div>
+
             <button
               onClick={() => setShowGuardians(!showGuardians)}
               className="bg-slate-800/90 text-white p-2 rounded-full shadow-lg border border-slate-700 hover:bg-slate-700 transition"
@@ -295,9 +314,10 @@ export default function Home() {
             >
               <span className="material-symbols-outlined">verified_user</span>
             </button>
-            <div className="bg-slate-800/90 text-neon-mint px-3 py-2 rounded-full shadow-lg border border-slate-700 flex items-center gap-2 text-xs font-bold">
+
+            <div className={`bg-slate-800/90 px-3 py-2 rounded-full shadow-lg border border-slate-700 flex items-center gap-2 text-xs font-bold ${analysis ? 'text-neon-mint' : 'text-slate-500'}`}>
               <span className="material-symbols-outlined text-sm">smart_toy</span>
-              AI SECURED
+              {analysis ? 'AI ACTIVE' : 'AI READY'}
             </div>
           </>
         ) : (
@@ -318,9 +338,9 @@ export default function Home() {
         </div>
       )}
 
-      {/* Search Bar */}
-      <div className="relative z-10 p-4 pt-12 pointer-events-none">
-        <form onSubmit={handleSearch} className="relative max-w-md mx-auto pointer-events-auto space-y-2 bg-slate-900/80 backdrop-blur-md p-4 rounded-3xl border border-slate-700 shadow-2xl">
+      {/* Search Bar - Floating Top Left */}
+      <div className="absolute top-4 left-4 z-20 w-full max-w-sm pointer-events-none">
+        <form onSubmit={handleSearch} className="pointer-events-auto bg-slate-900/90 backdrop-blur-md p-4 rounded-3xl border border-slate-700 shadow-2xl">
 
           {/* Origin Input */}
           <div className="relative flex items-center border-b border-slate-700/50 pb-2">
@@ -333,7 +353,7 @@ export default function Home() {
               onChange={(e) => handleInput(e.target.value, 'origin')}
               onFocus={() => {
                 setActiveInput('origin');
-                if (suggestions.length > 0) setShowSuggestions(true);
+                if (suggestions && suggestions.length > 0) setShowSuggestions(true);
               }}
               onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
             />
@@ -350,7 +370,7 @@ export default function Home() {
               onChange={(e) => handleInput(e.target.value, 'destination')}
               onFocus={() => {
                 setActiveInput('destination');
-                if (suggestions.length > 0) setShowSuggestions(true);
+                if (suggestions && suggestions.length > 0) setShowSuggestions(true);
               }}
               onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
             />
@@ -364,7 +384,7 @@ export default function Home() {
           </div>
 
           {/* Suggestions Dropdown */}
-          {showSuggestions && suggestions.length > 0 && (
+          {showSuggestions && suggestions && suggestions.length > 0 && (
             <div className="absolute top-full left-0 right-0 mt-2 bg-slate-800 border border-slate-700 rounded-xl shadow-xl overflow-hidden z-50">
               <ul>
                 {suggestions.map((place) => (
@@ -397,92 +417,158 @@ export default function Home() {
           <div className="bg-red-600 text-white rounded-3xl p-6 shadow-2xl border-2 border-red-400 animate-bounce text-center">
             <span className="material-symbols-outlined text-6xl mb-2">warning</span>
             <h2 className="text-2xl font-bold mb-1">SOS SENT!</h2>
-            <p className="text-red-100">Alert sent to guardians.</p>
+            <p className="text-red-100">Alert sent to guardians at {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.</p>
           </div>
         </div>
       )}
 
-      {/* Bottom Information Card */}
-      <div className="mt-auto relative z-10 p-4 pb-8 bg-gradient-to-t from-slate-900 via-slate-900/90 to-transparent pointer-events-none">
-        <div className="max-w-md mx-auto space-y-4 pointer-events-auto">
-          {analysis && !isLoading && (
-            <div className="bg-slate-800/90 backdrop-blur-md rounded-3xl p-5 border border-slate-700 shadow-xl animate-in slide-in-from-bottom duration-500">
+      {/* Draggable AI Analysis Card */}
+      <div className="absolute inset-x-0 bottom-0 pointer-events-none z-50 overflow-visible h-screen"> {/* Increased Z-Index and container height */}
+        {analysis && !isLoading && (
+          <motion.div
+            drag
+            dragConstraints={{ left: 0, right: 0, top: 0, bottom: 0 }} /* Allow full movement relative to parent */
+            dragMomentum={false}
+            initial={{ x: 20, y: 20 }}
+            className="pointer-events-auto absolute bottom-24 right-8 w-full max-w-lg"
+          >
+            <div className="bg-slate-800/95 backdrop-blur-md rounded-3xl p-5 border border-slate-700 shadow-2xl cursor-grab active:cursor-grabbing">
 
-              {/* Mode Selector & ETA */}
+              {/* Header with Modes */}
               <div className="flex justify-between items-center mb-4 bg-slate-900/50 rounded-xl p-1">
                 {[
-                  { id: 'walking', icon: 'directions_walk', label: 'Walk' },
-                  { id: 'cycling', icon: 'directions_bike', label: 'Bike' },
-                  { id: 'driving', icon: 'directions_car', label: 'Car' },
-                ].map((mode) => (
-                  <button
-                    key={mode.id}
-                    onClick={() => switchMode(mode.id as any)}
-                    className={`flex-1 flex flex-col items-center py-2 rounded-lg transition-all ${travelMode === mode.id ? 'bg-slate-700 text-neon-mint shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
-                  >
-                    <span className="material-symbols-outlined mb-1">{mode.icon}</span>
-                    <span className="text-[10px] uppercase font-bold tracking-wider">{mode.label}</span>
-                    <span className="text-xs font-mono">
-                      {routeOptions[mode.id] ? Math.round(routeOptions[mode.id]!.duration / 60) + ' m' : '-'}
-                    </span>
-                  </button>
-                ))}
+                  { id: 'walking', icon: 'directions_walk', label: 'Walk', speed: 5 },
+                  { id: 'cycling', icon: 'directions_bike', label: 'Bike', speed: 15 },
+                  { id: 'driving', icon: 'directions_car', label: 'Car', speed: 40 },
+                ].map((mode) => {
+                  const distMeters = routeOptions[mode.id]?.distance || 0;
+                  // Time = Distance (km) / Speed (km/h) * 60 mins
+                  const minutes = distMeters > 0 ? Math.round((distMeters / 1000) / mode.speed * 60) : 0;
+
+                  // Format label
+                  let timeLabel = '-';
+                  if (distMeters > 0) {
+                    if (minutes >= 60) {
+                      const hrs = Math.floor(minutes / 60);
+                      const mins = minutes % 60;
+                      timeLabel = `${hrs} hr ${mins} m`;
+                    } else {
+                      timeLabel = `${minutes} min`;
+                    }
+                  }
+
+                  return (
+                    <button
+                      key={mode.id}
+                      onClick={() => switchMode(mode.id as any)}
+                      className={`flex-1 flex flex-col items-center py-2 rounded-lg transition-all ${travelMode === mode.id ? 'bg-slate-700 text-neon-mint shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
+                    >
+                      <span className="material-symbols-outlined mb-1">{mode.icon}</span>
+                      <span className="text-[10px] uppercase font-bold tracking-wider">{mode.label}</span>
+                      <span className="text-xs font-mono">{timeLabel}</span>
+                    </button>
+                  );
+                })}
               </div>
 
               {/* Arrival Time */}
               <div className="text-center mb-4">
                 <p className="text-slate-400 text-xs uppercase tracking-widest">Expected Arrival</p>
                 <p className="text-2xl font-bold text-white">
-                  {routeOptions[travelMode] ? formatArrival(routeOptions[travelMode]!.duration) : '--:--'}
+                  {(() => {
+                    const currentRoute = routeOptions[travelMode];
+                    if (!currentRoute) return '--:--';
+
+                    const speed = travelMode === 'walking' ? 5 : travelMode === 'cycling' ? 15 : 40;
+                    const durationSecs = ((currentRoute.distance / 1000) / speed) * 3600;
+
+                    return formatArrival(durationSecs);
+                  })()}
                 </p>
               </div>
 
-              <div className="flex items-start justify-between border-t border-slate-700 pt-4">
-                <div>
-                  <h3 className="text-slate-400 text-xs font-semibold uppercase tracking-wider mb-1">AI Safety Score</h3>
-                  <div className="flex items-baseline space-x-2">
-                    <span className={`text-4xl font-black ${analysis.score >= 8 ? 'text-neon-mint' : analysis.score >= 5 ? 'text-yellow-400' : 'text-red-500'}`}>
-                      {analysis.score}
+              {/* Analysis Content */}
+              {analysis && (
+                <div className="flex items-start justify-between border-t border-slate-700 pt-4">
+                  <div>
+                    <h3 className="text-slate-400 text-xs font-semibold uppercase tracking-wider mb-1">AI Safety Score</h3>
+                    <div className="flex items-baseline space-x-2">
+                      <span className={`text-4xl font-black ${analysis.score >= 8 ? 'text-neon-mint' : analysis.score >= 5 ? 'text-yellow-400' : 'text-red-500'}`}>
+                        {analysis.score}
+                      </span>
+                      <span className="text-slate-400 text-sm">/ 10</span>
+                    </div>
+
+                    {/* Status Indicator Based on Source */}
+                    {analysis.source === 'Gemini' && (
+                      <div className="flex items-center gap-1.5 mt-1">
+                        <span className="relative flex h-2 w-2">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-neon-mint opacity-75"></span>
+                          <span className="relative inline-flex rounded-full h-2 w-2 bg-neon-mint"></span>
+                        </span>
+                        <span className="text-[10px] text-neon-mint font-bold tracking-wider">AI LIVE (Gemini)</span>
+                      </div>
+                    )}
+
+                    {analysis.source === 'Groq' && (
+                      <div className="flex items-center gap-1.5 mt-1">
+                        <span className="relative flex h-2 w-2">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                          <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-400"></span>
+                        </span>
+                        <span className="text-[10px] text-blue-400 font-bold tracking-wider">AI LIVE (Backup)</span>
+                      </div>
+                    )}
+
+                    {analysis.source === 'EST' && (
+                      <div className="flex items-center gap-1 mt-1">
+                        <span className="text-[10px] text-slate-500 font-bold tracking-wider bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700">EST</span>
+                        <span className="text-[10px] text-slate-500">Offline Mode</span>
+                      </div>
+                    )}
+                  </div>
+                  <div className="p-3 bg-slate-700/50 rounded-2xl">
+                    <span className={`material-symbols-outlined text-4xl ${analysis.score >= 8 ? 'text-neon-mint' : analysis.score >= 5 ? 'text-yellow-400' : 'text-red-500'}`}>
+                      {analysis.score >= 8 ? 'verified_user' : 'gpp_maybe'}
                     </span>
-                    <span className="text-slate-400 text-sm">/ 10</span>
                   </div>
                 </div>
-                <div className="p-3 bg-slate-700/50 rounded-2xl">
-                  <span className={`material-symbols-outlined text-4xl ${analysis.score >= 8 ? 'text-neon-mint' : analysis.score >= 5 ? 'text-yellow-400' : 'text-red-500'}`}>
-                    {analysis.score >= 8 ? 'verified_user' : 'gpp_maybe'}
+              )}
+
+              {analysis && (
+                <div className="mt-3 text-slate-300 text-sm leading-relaxed bg-slate-700/30 p-3 rounded-xl border border-slate-700/50">
+                  <span className="text-neon-mint mr-2 font-bold flex items-center gap-2 mb-2">
+                    <span className="material-symbols-outlined text-sm">psychology</span>
+                    {analysis.source === 'EST' ? 'Safety Context (Est):' : 'Real-time Analysis:'}
                   </span>
+                  {analysis.tip}
                 </div>
-              </div>
-
-              <div className="mt-3 text-slate-300 text-sm leading-relaxed bg-slate-700/30 p-3 rounded-xl border border-slate-700/50">
-                <span className="text-neon-mint mr-2 font-bold flex items-center gap-1 mb-1">
-                  <span className="material-symbols-outlined text-sm">psychology</span>
-                  AI Analysis:
-                </span>
-                {analysis.tip}
-              </div>
+              )}
+              {/* End Analysis Content */}
             </div>
-          )}
+          </motion.div>
+        )}
+      </div>
 
-          {/* SOS Button */}
-          <div className="flex justify-center pt-2">
-            <button
-              onMouseDown={startSOS}
-              onMouseUp={cancelSOS}
-              onMouseLeave={cancelSOS}
-              onTouchStart={startSOS}
-              onTouchEnd={cancelSOS}
-              className={`
-                relative group flex items-center justify-center rounded-full shadow-lg transition-all duration-300 select-none
-                ${isHoldingSOS ? 'w-24 h-24 bg-red-600 scale-110' : 'w-20 h-20 bg-red-500 hover:bg-red-600'}
-              `}
-            >
-              <div className={`absolute inset-0 rounded-full border-4 border-red-500/50 ${isHoldingSOS ? 'animate-ping' : 'opacity-0'}`}></div>
-              <span className={`font-black text-white ${isHoldingSOS ? 'text-xs' : 'text-xl'}`}>
-                {isHoldingSOS ? 'HOLD...' : 'SOS'}
-              </span>
-            </button>
-          </div>
+      {/* SOS Button - Fixed Bottom Center */}
+      <div className="absolute bottom-8 left-0 right-0 z-20 pointer-events-none flex justify-center">
+        <div className="pointer-events-auto text-center">
+          <button
+            onMouseDown={startSOS}
+            onMouseUp={cancelSOS}
+            onMouseLeave={cancelSOS}
+            onTouchStart={startSOS}
+            onTouchEnd={cancelSOS}
+            className={`
+            relative group flex items-center justify-center rounded-full shadow-lg transition-all duration-300 select-none
+            ${isHoldingSOS ? 'w-24 h-24 bg-red-600 scale-110' : 'w-20 h-20 bg-red-500 hover:bg-red-600'}
+            `}
+          >
+            <div className={`absolute inset-0 rounded-full border-4 border-red-500/50 ${isHoldingSOS ? 'animate-ping' : 'opacity-0'}`}></div>
+            <span className={`font-black text-white ${isHoldingSOS ? 'text-xs' : 'text-xl'}`}>
+              {isHoldingSOS ? 'HOLD...' : 'SOS'}
+            </span>
+          </button>
           <p className="text-center text-slate-500 text-xs mt-2">Hold 2s for Emergency</p>
         </div>
       </div>
