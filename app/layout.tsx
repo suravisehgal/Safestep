@@ -16,6 +16,13 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Safestep - Safety First",
   description: "A safety-first navigation app.",
+  viewport: {
+    width: "device-width",
+    initialScale: 1,
+    maximumScale: 1,
+    userScalable: false,
+  },
+  themeColor: "#ef4444", // Red for safety theme base
 };
 
 export default function RootLayout({

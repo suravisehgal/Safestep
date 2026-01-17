@@ -10,7 +10,6 @@ import { logoutUser } from './lib/firebase';
 import AuthModal from './components/AuthModal';
 import GuardianManager from './components/GuardianManager';
 import SafetyTimer from './components/SafetyTimer';
-import VoiceSOS from './components/VoiceSOS';
 import ShareTrip from './components/ShareTrip';
 import FakeCall from './components/FakeCall';
 
@@ -537,10 +536,7 @@ export default function Home() {
   const textSecondary = (theme as string) === 'light' ? 'text-slate-500' : 'text-slate-400';
 
   return (
-    <main className={`relative h-screen w-full overflow-hidden flex flex-col font-sans transition-colors duration-1000 bg-gradient-to-b ${getThemeClass()}`}>
-
-      {/* Voice Trigger */}
-      <VoiceSOS onTrigger={startSOS} />
+    <main className={`relative h-[100dvh] w-full overflow-hidden flex flex-col font-sans transition-colors duration-1000 bg-gradient-to-b ${getThemeClass()}`}>
 
       {/* Fake Call Overlay */}
       {showFakeCall && <FakeCall onClose={() => setShowFakeCall(false)} />}
@@ -621,7 +617,7 @@ export default function Home() {
 
             <button
               onClick={toggleTheme}
-              className={`p-2 rounded-full shadow-lg border transition ${panelBg} border-slate-700/20`}
+              className={`p-3 rounded-full shadow-lg border transition ${panelBg} border-slate-700/20 min-w-[48px] min-h-[48px] flex items-center justify-center`}
               title="Toggle Theme"
             >
               <span className="material-symbols-outlined">{theme === 'dark' ? 'light_mode' : 'dark_mode'}</span>
@@ -629,7 +625,7 @@ export default function Home() {
 
             <button
               onClick={() => setShowGuardians(!showGuardians)}
-              className={`p-2 rounded-full shadow-lg border transition ${panelBg} border-slate-700/20`}
+              className={`p-3 rounded-full shadow-lg border transition ${panelBg} border-slate-700/20 min-w-[48px] min-h-[48px] flex items-center justify-center`}
               title="Manage Guardians"
             >
               <span className="material-symbols-outlined">verified_user</span>
@@ -637,7 +633,7 @@ export default function Home() {
 
             <button
               onClick={() => setShowFakeCall(true)}
-              className={`p-2 rounded-full shadow-lg border transition ${panelBg} border-slate-700/20`}
+              className={`p-3 rounded-full shadow-lg border transition ${panelBg} border-slate-700/20 min-w-[48px] min-h-[48px] flex items-center justify-center`}
               title="Fake Call"
             >
               <span className="material-symbols-outlined">call</span>
@@ -645,7 +641,7 @@ export default function Home() {
 
             <div
               onClick={cycleMode}
-              className={`bg-slate-800/90 px-3 py-2 rounded-full shadow-lg border border-slate-700 flex items-center gap-2 text-xs font-bold cursor-pointer hover:bg-slate-700 transition select-none
+              className={`bg-slate-800/90 px-3 py-2 rounded-full shadow-lg border border-slate-700 flex items-center gap-2 text-xs font-bold cursor-pointer hover:bg-slate-700 transition select-none min-h-[48px]
                 ${manualMode ? 'ring-2 ring-neon-mint' : ''}
                 ${(manualMode === 'safe' || (!manualMode && analysis && analysis.score >= 8)) ? 'text-neon-mint' :
                   (manualMode === 'caution' || (!manualMode && analysis && analysis.score >= 5 && analysis.score < 8)) ? 'text-yellow-400' :
@@ -678,8 +674,8 @@ export default function Home() {
         </div>
       )}
 
-      {/* Search Bar - Floating Top Left */}
-      <div className="absolute top-4 left-4 z-20 w-full max-w-sm pointer-events-none">
+      {/* Search Bar - Floating Top Left (Desktop) / Top Center (Mobile) */}
+      <div className="absolute top-2 left-2 right-2 md:top-4 md:left-4 md:right-auto z-20 w-auto md:w-full md:max-w-sm pointer-events-none">
         <form onSubmit={handleSearch} className={`pointer-events-auto backdrop-blur-md p-4 rounded-3xl border border-slate-700/20 shadow-2xl ${panelBg}`}>
 
           {/* Origin Input */}
@@ -775,18 +771,22 @@ export default function Home() {
         </div>
       )}
 
-      {/* Draggable AI Analysis Card */}
-      <div className={`absolute inset-x-0 bottom-0 pointer-events-none overflow-visible h-screen ${activeWindow === 'analysis' ? 'z-50' : 'z-40'}`}>
+      {/* Analysis Card - Bottom Sheet (Mobile) / Floating Card (Desktop) */}
+      <div className={`fixed bottom-0 left-0 right-0 z-50 md:absolute md:inset-x-0 md:bottom-0 pointer-events-none overflow-visible md:h-screen ${activeWindow === 'analysis' ? 'z-50' : 'z-40'}`}>
         {analysis && !isLoading && (
           <motion.div
-            drag
-            dragConstraints={{ left: 0, right: 0, top: 0, bottom: 0 }} /* Allow full movement relative to parent */
+            drag="y"
+            dragConstraints={{ top: 0, bottom: 0 }}
             dragMomentum={false}
-            initial={{ x: 20, y: 20 }}
+            initial={{ y: 200 }}
+            animate={{ y: 0 }}
             onPointerDown={() => setActiveWindow('analysis')}
-            className="pointer-events-auto absolute bottom-24 right-8 w-full max-w-lg cursor-grab active:cursor-grabbing"
+            className="pointer-events-auto absolute bottom-0 left-0 right-0 w-full md:bottom-24 md:right-8 md:w-full md:left-auto md:max-w-lg cursor-grab active:cursor-grabbing touch-pan-y"
           >
-            <div className={`backdrop-blur-md rounded-3xl p-5 border border-slate-700/20 shadow-2xl ${panelBg}`}>
+            <div className={`backdrop-blur-xl rounded-t-3xl md:rounded-3xl p-5 border-t md:border border-slate-700/20 shadow-2xl ${panelBg} pb-8 md:pb-5`}>
+
+              {/* Mobile Drag Handle */}
+              <div className="w-12 h-1 bg-slate-400/30 rounded-full mx-auto mb-4 md:hidden"></div>
 
               {/* Header with Modes */}
               <div className={`flex justify-between items-center mb-4 rounded-xl p-1 ${(theme as string) === 'light' ? 'bg-slate-100' : 'bg-slate-900/50'}`}>
