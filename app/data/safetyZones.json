@@ -1,0 +1,66 @@
+{
+  "dangerZones": [
+    {
+      "id": "zone_01",
+      "name": "Old City Market",
+      "latitude": 17.3850,
+      "longitude": 78.4867,
+      "radiusMeters": 300,
+      "riskLevel": "medium",
+      "description": "Crowded area with reported pickpocketing incidents.",
+      "timeRestrictions": {
+        "startHour": 20,
+        "endHour": 6,
+        "dayOfWeek": [0, 1, 2, 3, 4, 5, 6]
+      },
+      "alternateRoute": "Use Ring Road via Hyderabad Road"
+    },
+    {
+      "id": "zone_02",
+      "name": "Necklace Road - Secunderabad",
+      "latitude": 17.3737,
+      "longitude": 78.4754,
+      "radiusMeters": 500,
+      "riskLevel": "low",
+      "description": "Safe area with good lighting and police presence during night.",
+      "alternateRoute": null
+    },
+    {
+      "id": "zone_03",
+      "name": "Shankarapalli Industrial Area",
+      "latitude": 17.2500,
+      "longitude": 78.3833,
+      "radiusMeters": 600,
+      "riskLevel": "high",
+      "description": "Isolated industrial zone with limited lighting and reduced traffic.",
+      "timeRestrictions": {
+        "startHour": 21,
+        "endHour": 5,
+        "dayOfWeek": [0, 1, 2, 3, 4, 5, 6]
+      },
+      "alternateRoute": "Take main highway via Charminar"
+    },
+    {
+      "id": "zone_04",
+      "name": "Gachibowli Late Night Area",
+      "latitude": 17.4400,
+      "longitude": 78.4500,
+      "radiusMeters": 400,
+      "riskLevel": "medium",
+      "description": "Business district with moderate evening traffic.",
+      "timeRestrictions": {
+        "startHour": 22,
+        "endHour": 5
+      }
+    },
+    {
+      "id": "zone_05",
+      "name": "Ramoji Film City Route",
+      "latitude": 17.2833,
+      "longitude": 78.7000,
+      "radiusMeters": 1000,
+      "riskLevel": "low",
+      "description": "Well-maintained route with tourist traffic."
+    }
+  ]
+}
