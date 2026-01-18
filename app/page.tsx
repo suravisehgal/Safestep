@@ -12,6 +12,8 @@ import GuardianManager from './components/GuardianManager';
 import SafetyTimer from './components/SafetyTimer';
 import ShareTrip from './components/ShareTrip';
 import FakeCall from './components/FakeCall';
+import SafetyContext from './components/SafetyContext';
+import { estimateTravelTime, TravelTimeEstimate } from './utils/location';
 
 // Dynamically import Map to avoid SSR issues
 const Map = dynamic(() => import('./components/MapComponent'), {
@@ -59,6 +61,7 @@ export default function Home() {
     cycling: null,
     driving: null
   });
+  const [travelTime, setTravelTime] = useState<TravelTimeEstimate | undefined>(undefined);
 
   // Autocomplete State
   const [suggestions, setSuggestions] = useState<NominatimResult[]>();
@@ -321,7 +324,12 @@ export default function Home() {
 
         // Set initial path
         const currentRoute = travelMode === 'walking' ? walkRoute : travelMode === 'cycling' ? bikeRoute : driveRoute;
-        if (currentRoute) setRoutePath(currentRoute.coordinates);
+        if (currentRoute) {
+          setRoutePath(currentRoute.coordinates);
+          // Calculate travel time based on route
+          const time = estimateTravelTime(currentRoute.distance, travelMode);
+          setTravelTime(time);
+        }
       }
 
       const [result] = await Promise.all([
@@ -377,7 +385,11 @@ export default function Home() {
     setAnalysis(prev => prev ? { ...prev, tip: "Updating for " + mode + "..." } : null); // Optimistic UI
 
     if (routeOptions[mode]) {
-      setRoutePath(routeOptions[mode]!.coordinates);
+      const route = routeOptions[mode]!;
+      setRoutePath(route.coordinates);
+      // Update travel time for new mode
+      const time = estimateTravelTime(route.distance, mode);
+      setTravelTime(time);
     }
 
     // Trigger new API call for safety analysis
@@ -898,6 +910,18 @@ export default function Home() {
                   {analysis.tip}
                 </div>
               )}
+
+              {/* Safety Context - Arrival Time & Danger Zones */}
+              <div className="mt-4">
+                <SafetyContext
+                  origin={userLocation}
+                  destination={destinationLocation}
+                  routePath={routePath}
+                  travelMode={travelMode}
+                  travelTime={travelTime}
+                  isLoading={isLoading}
+                />
+              </div>
 
               {/* Live Sharing & ETA */}
               {analysis && routeOptions[travelMode] && (
