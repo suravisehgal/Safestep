@@ -22,8 +22,7 @@ export async function getSafetyAnalysis(origin: string, destination: string, mod
 
     const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
     const model = genAI.getGenerativeModel({ 
-      model: "gemini-1.5-flash", 
-      generationConfig: { responseFormat: "application/json" } 
+      model: "gemini-1.5-flash"
     });
     const prompt = getPrompt(origin, destination, mode);
     const result = await model.generateContent(prompt);
@@ -115,8 +114,7 @@ export async function analyzeRouteTime(
 
     const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
     const model = genAI.getGenerativeModel({
-      model: "gemini-1.5-flash",
-      generationConfig: { responseFormat: "application/json" }
+      model: "gemini-1.5-flash"
     });
 
     const prompt = getTimePrompt(origin, destination, mode, baseDuration, distance);
