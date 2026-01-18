@@ -5,7 +5,7 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 export interface SafetyAnalysis {
   score: number;
   tip: string;
-  source: 'Gemini' | 'Groq' | 'EST';
+  source: 'Gemini' | 'Perplexity' | 'Groq' | 'EST';
 }
 
 export interface RouteTimingAnalysis {
@@ -13,12 +13,13 @@ export interface RouteTimingAnalysis {
   adjustedMinutes: number;
   arrivalTime: string;
   timingNotes: string;
-  source: 'Gemini' | 'Groq' | 'EST';
+  source: 'Gemini' | 'Perplexity' | 'Groq' | 'EST';
   confidence: number; // 0-100
 }
 
 // Security: Keys accessed only on server
 const GEMINI_API_KEY = process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY;
+const PERPLEXITY_API_KEY = process.env.PERPLEXITY_API_KEY;
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
 export async function getSafetyAnalysis(origin: string, destination: string, mode: string = 'walking'): Promise<SafetyAnalysis> {
@@ -39,41 +40,71 @@ export async function getSafetyAnalysis(origin: string, destination: string, mod
     return { score: data.score, tip: data.tip, source: 'Gemini' };
 
   } catch (geminiError: any) {
-    console.warn(`[SafetyService] Gemini Failed: ${geminiError.message}. Switching to Groq...`);
+    console.warn(`[SafetyService] Gemini Failed: ${geminiError.message}. Trying Perplexity...`);
 
-    // ATTEMPT 2: GROQ (LLAMA 3.1)
+    // ATTEMPT 2: PERPLEXITY (Real-time Web Search)
     try {
-      if (!GROQ_API_KEY) throw new Error("Groq Key Missing");
+      if (!PERPLEXITY_API_KEY) throw new Error("Perplexity Key Missing");
 
-      const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      const perplexityResponse = await fetch('https://api.perplexity.ai/chat/completions', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${GROQ_API_KEY}`,
+          'Authorization': `Bearer ${PERPLEXITY_API_KEY}`,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          model: "llama-3.1-8b-instant",
-          messages: [{ role: "user", content: getPrompt(origin, destination, mode) + "\n\nRETURN VALID JSON ONLY." }],
-          response_format: { type: "json_object" }
+          model: "pplx-7b-online",
+          messages: [{ 
+            role: "user", 
+            content: getPrompt(origin, destination, mode) + "\n\nReturn VALID JSON ONLY: {\"score\": number, \"tip\": \"string\"}"
+          }]
         })
       });
 
-      if (!groqResponse.ok) throw new Error(`Groq Status: ${groqResponse.status}`);
+      if (!perplexityResponse.ok) throw new Error(`Perplexity Status: ${perplexityResponse.status}`);
 
-      const groqData = await groqResponse.json();
-      const parsedGroq = JSON.parse(groqData.choices[0].message.content);
+      const perplexityData = await perplexityResponse.json();
+      const parsed = JSON.parse(perplexityData.choices[0].message.content);
 
-      return { score: parsedGroq.score, tip: parsedGroq.tip, source: 'Groq' };
+      return { score: parsed.score, tip: parsed.tip, source: 'Perplexity' };
 
-    } catch (groqError: any) {
-      console.error(`[SafetyService] Groq Failed: ${groqError.message}. Using Offline Fallback.`);
+    } catch (perplexityError: any) {
+      console.warn(`[SafetyService] Perplexity Failed: ${perplexityError.message}. Trying Groq...`);
 
-      // ATTEMPT 3: EST FALLBACK
-      return {
-        score: 7.8,
-        tip: "EST: Using local urban safety metrics. Stay on main roads and avoid unlit shortcuts.",
-        source: 'EST'
-      };
+      // ATTEMPT 3: GROQ (LLAMA 3.1)
+      try {
+        if (!GROQ_API_KEY) throw new Error("Groq Key Missing");
+
+        const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${GROQ_API_KEY}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            model: "llama-3.1-8b-instant",
+            messages: [{ role: "user", content: getPrompt(origin, destination, mode) + "\n\nRETURN VALID JSON ONLY." }],
+            response_format: { type: "json_object" }
+          })
+        });
+
+        if (!groqResponse.ok) throw new Error(`Groq Status: ${groqResponse.status}`);
+
+        const groqData = await groqResponse.json();
+        const parsedGroq = JSON.parse(groqData.choices[0].message.content);
+
+        return { score: parsedGroq.score, tip: parsedGroq.tip, source: 'Groq' };
+
+      } catch (groqError: any) {
+        console.error(`[SafetyService] Groq Failed: ${groqError.message}. Using Offline Fallback.`);
+
+        // ATTEMPT 4: EST FALLBACK
+        return {
+          score: 7.8,
+          tip: "EST: Using local urban safety metrics. Stay on main roads and avoid unlit shortcuts.",
+          source: 'EST'
+        };
+      }
     }
   }
 }
@@ -81,6 +112,7 @@ export async function getSafetyAnalysis(origin: string, destination: string, mod
 /**
  * LOCATION-AWARE TIMING ANALYSIS
  * Uses actual distance/duration + AI to provide accurate time estimates like Google Maps
+ * Tries: Gemini → Perplexity (web search) → Groq → EST Fallback
  */
 export async function analyzeLocationTiming(
   origin: string,
@@ -122,34 +154,33 @@ export async function analyzeLocationTiming(
     };
 
   } catch (geminiError: any) {
-    console.warn(`[LocationTiming] Gemini Failed: ${geminiError.message}. Trying Groq...`);
+    console.warn(`[LocationTiming] Gemini Failed: ${geminiError.message}. Trying Perplexity...`);
 
-    // ATTEMPT 2: GROQ - Location-Aware Timing
+    // ATTEMPT 2: PERPLEXITY - Real-time Web Search for Location Data
     try {
-      if (!GROQ_API_KEY) throw new Error("Groq Key Missing");
+      if (!PERPLEXITY_API_KEY) throw new Error("Perplexity Key Missing");
 
       const timingPrompt = getTimingPrompt(origin, destination, mode, distanceKm, baseMinutes, hour);
       
-      const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      const perplexityResponse = await fetch('https://api.perplexity.ai/chat/completions', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${GROQ_API_KEY}`,
+          'Authorization': `Bearer ${PERPLEXITY_API_KEY}`,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          model: "llama-3.1-8b-instant",
+          model: "pplx-7b-online",
           messages: [{ 
             role: "user", 
-            content: timingPrompt + "\n\nRETURN VALID JSON ONLY WITH: estimatedDuration (minutes), adjustedDuration (minutes), notes (string)"
-          }],
-          response_format: { type: "json_object" }
+            content: timingPrompt + "\n\nUse real-time web data if available. Return VALID JSON ONLY with: estimatedDuration (minutes), adjustedDuration (minutes), notes (string)"
+          }]
         })
       });
 
-      if (!groqResponse.ok) throw new Error(`Groq Status: ${groqResponse.status}`);
+      if (!perplexityResponse.ok) throw new Error(`Perplexity Status: ${perplexityResponse.status}`);
 
-      const groqData = await groqResponse.json();
-      const data = JSON.parse(groqData.choices[0].message.content);
+      const perplexityData = await perplexityResponse.json();
+      const data = JSON.parse(perplexityData.choices[0].message.content);
 
       const adjustedMinutes = Math.round(data.adjustedDuration || data.estimatedDuration);
       const arrivalTime = calculateArrivalTime(adjustedMinutes);
@@ -158,16 +189,59 @@ export async function analyzeLocationTiming(
         estimatedMinutes: baseMinutes,
         adjustedMinutes,
         arrivalTime,
-        timingNotes: data.notes || "Route timing analyzed by Groq based on location context.",
-        source: 'Groq',
-        confidence: 80
+        timingNotes: data.notes || "Route timing analyzed by Perplexity with web search data.",
+        source: 'Perplexity',
+        confidence: 88
       };
 
-    } catch (groqError: any) {
-      console.error(`[LocationTiming] Groq Failed: ${groqError.message}. Using EST fallback.`);
+    } catch (perplexityError: any) {
+      console.warn(`[LocationTiming] Perplexity Failed: ${perplexityError.message}. Trying Groq...`);
 
-      // ATTEMPT 3: INTELLIGENT FALLBACK (EST)
-      return generateIntelligentFallbackTiming(mode, baseMinutes, distanceKm, hour);
+      // ATTEMPT 3: GROQ - Location-Aware Timing
+      try {
+        if (!GROQ_API_KEY) throw new Error("Groq Key Missing");
+
+        const timingPrompt = getTimingPrompt(origin, destination, mode, distanceKm, baseMinutes, hour);
+        
+        const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${GROQ_API_KEY}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            model: "llama-3.1-8b-instant",
+            messages: [{ 
+              role: "user", 
+              content: timingPrompt + "\n\nRETURN VALID JSON ONLY WITH: estimatedDuration (minutes), adjustedDuration (minutes), notes (string)"
+            }],
+            response_format: { type: "json_object" }
+          })
+        });
+
+        if (!groqResponse.ok) throw new Error(`Groq Status: ${groqResponse.status}`);
+
+        const groqData = await groqResponse.json();
+        const data = JSON.parse(groqData.choices[0].message.content);
+
+        const adjustedMinutes = Math.round(data.adjustedDuration || data.estimatedDuration);
+        const arrivalTime = calculateArrivalTime(adjustedMinutes);
+
+        return {
+          estimatedMinutes: baseMinutes,
+          adjustedMinutes,
+          arrivalTime,
+          timingNotes: data.notes || "Route timing analyzed by Groq based on location context.",
+          source: 'Groq',
+          confidence: 80
+        };
+
+      } catch (groqError: any) {
+        console.error(`[LocationTiming] Groq Failed: ${groqError.message}. Using EST fallback.`);
+
+        // ATTEMPT 4: INTELLIGENT FALLBACK (EST)
+        return generateIntelligentFallbackTiming(mode, baseMinutes, distanceKm, hour);
+      }
     }
   }
 }
