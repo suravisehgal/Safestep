@@ -27,7 +27,7 @@ export default function SafetyContext({
   travelTime,
   isLoading = false
 }: SafetyContextProps) {
-  const [dangerZones] = useState<DangerZone[]>(safetyZonesData.dangerZones);
+  const [dangerZones] = useState<DangerZone[]>(safetyZonesData.dangerZones as DangerZone[]);
   const [intersectingZones, setIntersectingZones] = useState<DangerZone[]>([]);
   const [activeWarnings, setActiveWarnings] = useState<string[]>([]);
 
