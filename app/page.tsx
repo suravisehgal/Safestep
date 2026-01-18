@@ -2,12 +2,13 @@
 
 import { useState, useEffect, useRef } from 'react';
 import dynamic from 'next/dynamic';
-import { getSafetyAnalysis, SafetyAnalysis } from './services/GeminiService';
+import { getSafetyAnalysis, SafetyAnalysis, analyzeRouteTime, RouteTimeAnalysis } from './services/GeminiService';
 import { getRoute, RouteData } from './services/RouteService';
 import { useAuth } from './components/AuthProvider';
 import AuthModal from './components/AuthModal';
 import GuardianManager from './components/GuardianManager';
 import SafetyTimer from './components/SafetyTimer';
+import TransportTimeAnalysis from './components/TransportTimeAnalysis';
 
 // Dynamically import Map to avoid SSR issues
 const Map = dynamic(() => import('./components/MapComponent'), {
@@ -47,6 +48,11 @@ export default function Home() {
   // Multi-Modal State
   const [travelMode, setTravelMode] = useState<'walking' | 'cycling' | 'driving'>('walking');
   const [routeOptions, setRouteOptions] = useState<Record<string, RouteData | null>>({
+    walking: null,
+    cycling: null,
+    driving: null
+  });
+  const [routeTimeAnalysis, setRouteTimeAnalysis] = useState<Record<string, RouteTimeAnalysis | null>>({
     walking: null,
     cycling: null,
     driving: null
@@ -162,6 +168,19 @@ export default function Home() {
           driving: driveRoute
         });
 
+        // Analyze route times with Gemini (considering destination access)
+        const [walkTimeAnalysis, bikeTimeAnalysis, driveTimeAnalysis] = await Promise.all([
+          walkRoute ? analyzeRouteTime(origin, destination, 'walking', walkRoute.duration, walkRoute.distance) : Promise.resolve(null),
+          bikeRoute ? analyzeRouteTime(origin, destination, 'cycling', bikeRoute.duration, bikeRoute.distance) : Promise.resolve(null),
+          driveRoute ? analyzeRouteTime(origin, destination, 'driving', driveRoute.duration, driveRoute.distance) : Promise.resolve(null)
+        ]);
+
+        setRouteTimeAnalysis({
+          walking: walkTimeAnalysis,
+          cycling: bikeTimeAnalysis,
+          driving: driveTimeAnalysis
+        });
+
         // Set initial path
         const currentRoute = travelMode === 'walking' ? walkRoute : travelMode === 'cycling' ? bikeRoute : driveRoute;
         if (currentRoute) setRoutePath(currentRoute.coordinates);
@@ -264,6 +283,15 @@ export default function Home() {
     const now = new Date();
     now.setSeconds(now.getSeconds() + seconds);
     return now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
+  const formatTime = (seconds: number) => {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    if (hours > 0) {
+      return `${hours}h ${minutes}m`;
+    }
+    return `${minutes}m`;
   };
 
   return (
@@ -414,27 +442,60 @@ export default function Home() {
                   { id: 'walking', icon: 'directions_walk', label: 'Walk' },
                   { id: 'cycling', icon: 'directions_bike', label: 'Bike' },
                   { id: 'driving', icon: 'directions_car', label: 'Car' },
-                ].map((mode) => (
-                  <button
-                    key={mode.id}
-                    onClick={() => switchMode(mode.id as any)}
-                    className={`flex-1 flex flex-col items-center py-2 rounded-lg transition-all ${travelMode === mode.id ? 'bg-slate-700 text-neon-mint shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
-                  >
-                    <span className="material-symbols-outlined mb-1">{mode.icon}</span>
-                    <span className="text-[10px] uppercase font-bold tracking-wider">{mode.label}</span>
-                    <span className="text-xs font-mono">
-                      {routeOptions[mode.id] ? Math.round(routeOptions[mode.id]!.duration / 60) + ' m' : '-'}
-                    </span>
-                  </button>
-                ))}
+                ].map((mode) => {
+                  // Get the correct duration - use adjusted duration from Gemini if available, otherwise use route duration
+                  const timeAnalysis = routeTimeAnalysis[mode.id];
+                  const displayDuration = timeAnalysis 
+                    ? timeAnalysis.adjustedDuration 
+                    : (routeOptions[mode.id]?.duration || 0);
+                  const displayMinutes = Math.round(displayDuration / 60);
+                  
+                  return (
+                    <button
+                      key={mode.id}
+                      onClick={() => switchMode(mode.id as any)}
+                      className={`flex-1 flex flex-col items-center py-2 rounded-lg transition-all ${travelMode === mode.id ? 'bg-slate-700 text-neon-mint shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
+                    >
+                      <span className="material-symbols-outlined mb-1">{mode.icon}</span>
+                      <span className="text-[10px] uppercase font-bold tracking-wider">{mode.label}</span>
+                      <span className="text-xs font-mono">
+                        {displayDuration > 0 ? displayMinutes + ' m' : '-'}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
 
-              {/* Arrival Time */}
-              <div className="text-center mb-4">
-                <p className="text-slate-400 text-xs uppercase tracking-widest">Expected Arrival</p>
-                <p className="text-2xl font-bold text-white">
-                  {routeOptions[travelMode] ? formatArrival(routeOptions[travelMode]!.duration) : '--:--'}
-                </p>
+              {/* Arrival Time & Duration */}
+              <div className="text-center mb-4 space-y-2">
+                <div>
+                  <p className="text-slate-400 text-xs uppercase tracking-widest mb-1">Travel Time</p>
+                  <p className="text-xl font-bold text-white">
+                    {routeTimeAnalysis[travelMode] 
+                      ? formatTime(routeTimeAnalysis[travelMode]!.adjustedDuration)
+                      : routeOptions[travelMode] 
+                        ? formatTime(routeOptions[travelMode]!.duration)
+                        : '--'}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-slate-400 text-xs uppercase tracking-widest mb-1">Expected Arrival</p>
+                  <p className="text-2xl font-bold text-neon-mint">
+                    {(() => {
+                      // Calculate arrival time dynamically from the current adjusted duration
+                      const displayDuration = routeTimeAnalysis[travelMode]?.adjustedDuration || routeOptions[travelMode]?.duration;
+                      if (displayDuration) {
+                        return formatArrival(displayDuration);
+                      }
+                      return '--:--';
+                    })()}
+                  </p>
+                </div>
+                {routeTimeAnalysis[travelMode]?.accessNotes && (
+                  <p className="text-slate-500 text-xs mt-2 italic">
+                    {routeTimeAnalysis[travelMode]!.accessNotes}
+                  </p>
+                )}
               </div>
 
               <div className="flex items-start justify-between border-t border-slate-700 pt-4">
@@ -463,6 +524,11 @@ export default function Home() {
               </div>
             </div>
           )}
+
+          {/* Transport Time Analysis */}
+          {routeOptions.walking || routeOptions.cycling || routeOptions.driving ? (
+            <TransportTimeAnalysis routeOptions={routeOptions} routeTimeAnalysis={routeTimeAnalysis} />
+          ) : null}
 
           {/* SOS Button */}
           <div className="flex justify-center pt-2">

@@ -37,9 +37,9 @@ export async function getRoute(start: [number, number], end: [number, number], p
             baseUrl = "https://router.project-osrm.org/route/v1";
             osrmProfile = "foot";
         } else if (profile === 'cycling') {
-            // specialized bike server (uses 'driving' profile internally)
-            baseUrl = "https://routing.openstreetmap.de/routed-bike/route/v1";
-            osrmProfile = "driving";
+            // Use standard OSRM with bike profile for better accuracy
+            baseUrl = "https://router.project-osrm.org/route/v1";
+            osrmProfile = "bike";
         } else if (profile === 'driving') {
             // specialized car server
             baseUrl = "https://routing.openstreetmap.de/routed-car/route/v1";
@@ -57,10 +57,32 @@ export async function getRoute(start: [number, number], end: [number, number], p
         if (data.routes && data.routes.length > 0) {
             const route = data.routes[0];
             const coordinates = route.geometry.coordinates.map((coord: [number, number]) => [coord[1], coord[0]]);
+            
+            let duration = route.duration; // in seconds
+            let distance = route.distance; // in meters
+            
+            // Validate and correct unrealistic durations based on distance and mode
+            const distanceKm = distance / 1000;
+            const expectedSpeeds = {
+                walking: 5,    // 5 km/h average walking speed
+                cycling: 15,    // 15 km/h average cycling speed
+                driving: 50     // 50 km/h average driving speed (urban)
+            };
+            
+            const expectedSpeed = expectedSpeeds[profile] || 5;
+            const expectedDuration = (distanceKm / expectedSpeed) * 3600; // seconds
+            
+            // If API returns duration that's way off (more than 2x expected), use calculated duration
+            // But allow some variance (API might account for traffic, elevation, etc.)
+            if (duration > expectedDuration * 2 || duration < expectedDuration * 0.3) {
+                console.warn(`OSRM ${profile} duration seems unrealistic (${duration}s vs expected ${expectedDuration.toFixed(0)}s). Using calculated duration.`);
+                duration = expectedDuration;
+            }
+            
             return {
                 coordinates,
-                duration: route.duration, // Actual OSRM duration in seconds
-                distance: route.distance // meters
+                duration: Math.round(duration),
+                distance: Math.round(distance)
             };
         }
         throw new Error("No route found");
@@ -68,15 +90,23 @@ export async function getRoute(start: [number, number], end: [number, number], p
         console.warn(`OSRM Routing Error (${profile}). Using fallback calculation.`, error);
 
         // Fallback: Calculate straight-line distance and estimate time
+        // Note: Straight-line distance is shorter than actual route, so we add 20% buffer
         const distKm = getDistanceFromLatLonInKm(start[0], start[1], end[0], end[1]);
-        const speeds = { walking: 5, cycling: 15, driving: 30 }; // km/h
+        const routeBuffer = 1.2; // 20% longer for actual route vs straight line
+        const adjustedDistKm = distKm * routeBuffer;
+        
+        const speeds = { 
+            walking: 5,    // 5 km/h average walking speed
+            cycling: 15,   // 15 km/h average cycling speed  
+            driving: 50    // 50 km/h average driving speed (urban)
+        };
         const speed = speeds[profile] || 5;
-        const durationSeconds = (distKm / speed) * 3600;
+        const durationSeconds = (adjustedDistKm / speed) * 3600;
 
         return {
             coordinates: [start, end], // Straight line
-            duration: durationSeconds,
-            distance: distKm * 1000
+            duration: Math.round(durationSeconds),
+            distance: Math.round(adjustedDistKm * 1000)
         };
     }
 }

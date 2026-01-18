@@ -18,7 +18,7 @@ export function useGuardians() {
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        if (!user) {
+        if (!user || !db) {
             setGuardians([]);
             setLoading(false);
             return;
@@ -43,6 +43,7 @@ export function useGuardians() {
 
     const addGuardian = async (name: string, phone: string) => {
         if (!user) throw new Error("User not authenticated");
+        if (!db) throw new Error("Firebase is not configured. Please check your environment variables.");
 
         // Validation
         if (!name.trim()) throw new Error("Name is required");
@@ -56,7 +57,7 @@ export function useGuardians() {
     };
 
     const removeGuardian = async (id: string) => {
-        if (!user) return;
+        if (!user || !db) return;
         await deleteDoc(doc(db, `users/${user.uid}/guardians`, id));
     };
 

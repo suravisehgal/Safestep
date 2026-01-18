@@ -13,6 +13,10 @@ export default function AuthModal({ onClose }: { onClose: () => void }) {
     const [error, setError] = useState("");
 
     const handleGoogleLogin = async () => {
+        if (!auth) {
+            setError("Firebase is not configured. Please check your environment variables.");
+            return;
+        }
         try {
             const provider = new GoogleAuthProvider();
             await signInWithPopup(auth, provider);
@@ -24,6 +28,10 @@ export default function AuthModal({ onClose }: { onClose: () => void }) {
 
     const handleEmailAuth = async (e: React.FormEvent) => {
         e.preventDefault();
+        if (!auth) {
+            setError("Firebase is not configured. Please check your environment variables.");
+            return;
+        }
         try {
             if (isLogin) {
                 await signInWithEmailAndPassword(auth, email, password);
