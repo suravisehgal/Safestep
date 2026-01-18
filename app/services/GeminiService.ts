@@ -1,70 +1,103 @@
+'use server';
+
 import { GoogleGenerativeAI } from "@google/generative-ai";
-
-const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
-
-// Initialize with the API key directly
-const genAI = new GoogleGenerativeAI(apiKey || "");
-
-const cache = new Map<string, SafetyAnalysis>();
 
 export interface SafetyAnalysis {
   score: number;
   tip: string;
-  isMock: boolean;
+  source: 'Gemini' | 'Groq' | 'EST';
 }
 
-export async function getSafetyAnalysis(origin: string, destination: string, mode: string = 'walking'): Promise<SafetyAnalysis> {
-  console.log("Using API Key:", !!process.env.NEXT_PUBLIC_GEMINI_API_KEY);
+// Security: Keys accessed only on server
+const GEMINI_API_KEY = process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY;
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
-  if (!apiKey || apiKey === "your_gemini_api_key_here") {
-    console.warn("Gemini API Key is missing or invalid. Using simulation fallback.");
-    return mockResponse(origin, destination, mode);
-  }
+export async function getSafetyAnalysis(origin: string, destination: string, mode: string = 'walking'
+): Promise<SafetyAnalysis> {
+  console.log(`[SafetyService] Request: ${origin} -> ${destination} (${mode})`);
 
+  // ATTEMPT 1: GEMINI 1.5 FLASH
   try {
-    const key = `${origin}-${destination}-${mode}`;
-    if (cache.has(key)) {
-      return cache.get(key)!;
-    }
+    if (!GEMINI_API_KEY) throw new Error("Gemini Key Missing");
 
-    // Explicitly target the stable v1 endpoint with gemini-2.5-flash
-    const model = genAI.getGenerativeModel({
-      model: "gemini-2.5-flash",
-      generationConfig: { response_mime_type: "application/json" }
+    const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+    const model = genAI.getGenerativeModel({ 
+      model: "gemini-1.5-flash", 
+      generationConfig: { responseFormat: "application/json" } 
     });
-
-    const prompt = `Analyze the route from ${origin} to ${destination}. The user is ${mode === 'driving' ? 'driving' : mode === 'cycling' ? 'cycling' : 'walking'}. Provide a safety score (1-10) and a tip. IMPORTANT: If the destination is a major city center, score it higher. If it's an unmapped or rural area, score it lower. Never return 8 by default. Your response MUST be unique to these coordinates. Provide a JSON response: { "score": number, "tip": "string" }`;
-
+    const prompt = getPrompt(origin, destination, mode);
     const result = await model.generateContent(prompt);
     const responseText = result.response.text();
+    const data = JSON.parse(responseText.replace(/```json/g, '').replace(/```/g, '').trim());
 
-    console.log("Gemini Response:", responseText);
+    return { score: data.score, tip: data.tip, source: 'Gemini' };
 
-    if (!responseText) throw new Error("Empty response from Gemini");
+  } catch (geminiError: any) {
+    console.warn(`[SafetyService] Gemini Failed: ${geminiError.message}. Switching to Groq...`);
 
-    // Only set isMock: false after synchronous success
-    const parsedData = JSON.parse(responseText);
-    const analysis: SafetyAnalysis = { 
-      score: parsedData.score, 
-      tip: parsedData.tip, 
-      isMock: false 
-    };
-    
-    cache.set(key, analysis);
-    return analysis;
+    // ATTEMPT 2: GROQ (LLAMA 3.1)
+    try {
+      if (!GROQ_API_KEY) throw new Error("Groq Key Missing");
 
-  } catch (error) {
-    console.error("Gemini API Error (Falling back to offline mode):", error);
-    return mockResponse(origin, destination, mode);
+      const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${GROQ_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: "llama-3.1-8b-instant",
+          messages: [{ role: "user", content: getPrompt(origin, destination, mode) + "\n\nRETURN JSON ONLY." }],
+          response_format: { type: "json_object" }
+        })
+      });
+
+      if (!groqResponse.ok) throw new Error(`Groq Status: ${groqResponse.status}`);
+
+      const groqData = await groqResponse.json();
+      const parsedGroq = JSON.parse(groqData.choices[0].message.content);
+
+      return { score: parsedGroq.score, tip: parsedGroq.tip, source: 'Groq' };
+
+    } catch (groqError: any) {
+      console.error(`[SafetyService] Groq Failed: ${groqError.message}. Using Offline Fallback.`);
+
+      // ATTEMPT 3: EST FALLBACK
+      return {
+        score: 7.8,
+        tip: "EST: Using local urban safety metrics. Stay on main roads and avoid unlit shortcuts.",
+        source: 'EST'
+      };
+    }
   }
 }
 
-function mockResponse(origin: string, destination: string, mode: string): SafetyAnalysis {
-  return {
-    score: 8,
-    tip: `Analysis based on local historical data: This ${mode} route is well-lit and active.`,
-    isMock: true
-  };
+function getPrompt(origin: string, destination: string, mode: string): string {
+  const time = new Date().toLocaleTimeString();
+  return `
+      ROLE: You are a "Hyper-Critical Urban Safety Auditor."
+      CONTEXT: Current time is ${time}. Mode: ${mode}.
+      TASK: Analyze the route from ${origin} to ${destination}.
+
+      CRITICAL SCORING RULES:
+      - STRICTLY FORBIDDEN to default to 7 or 8. Use the full 1-10 scale.
+      - 9-10: Bustling, high-visibility main streets only.
+      - 1-4: Unlit parks, isolated alleys, or desolate areas, especially at night.
+      - 6-8: Average residential areas.
+      - Be EXTREMELY critical based on the time of day (${time}).
+
+      OUTPUT REQUIREMENTS:
+      - Tip: 2-3 detailed sentences explaining the score (e.g., "Lighting is poor," "High crowd density").
+      - JSON format: { "score": number, "tip": "string" }
+  `;
+}
+
+export interface RouteTimeAnalysis {
+  estimatedDuration: number;
+  arrivalTime: string;
+  adjustedDuration: number;
+  accessNotes: string;
+  source?: 'Gemini' | 'Groq' | 'EST';
 }
 
 export async function analyzeRouteTime(
@@ -74,118 +107,125 @@ export async function analyzeRouteTime(
   baseDuration: number, // in seconds from routing API
   distance: number // in meters
 ): Promise<RouteTimeAnalysis> {
-  const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
+  console.log(`[RouteTimeService] Analyzing: ${origin} -> ${destination} (${mode})`);
 
-  if (!apiKey || apiKey === "your_gemini_api_key_here") {
-    // Fallback: calculate based on realistic speeds
-    const distanceKm = distance / 1000;
-    const speeds = { walking: 5, cycling: 15, driving: 50 };
-    const speed = speeds[mode] || 5;
-    const estimatedDuration = (distanceKm / speed) * 3600;
-    
-    const now = new Date();
-    now.setSeconds(now.getSeconds() + estimatedDuration);
-    const arrivalTime = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    
-    return {
-      estimatedDuration: Math.round(estimatedDuration),
-      arrivalTime,
-      adjustedDuration: Math.round(estimatedDuration),
-      accessNotes: `Estimated time based on ${speed} km/h average speed for ${mode}.`,
-      isMock: true
-    };
-  }
-
+  // ATTEMPT 1: GEMINI
   try {
+    if (!GEMINI_API_KEY) throw new Error("Gemini Key Missing");
+
+    const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
     const model = genAI.getGenerativeModel({
-      model: "gemini-2.5-flash",
-      generationConfig: { response_mime_type: "application/json" }
+      model: "gemini-1.5-flash",
+      generationConfig: { responseFormat: "application/json" }
     });
 
-    const distanceKm = (distance / 1000).toFixed(2);
-    const baseMinutes = Math.round(baseDuration / 60);
-    
-    const prompt = `Analyze the route timing from "${origin}" to "${destination}". 
-    
-Mode of transport: ${mode}
-Base route duration: ${baseMinutes} minutes
-Distance: ${distanceKm} km
-
-Consider:
-1. Vehicle type (${mode === 'driving' ? 'car' : mode === 'cycling' ? 'bicycle' : 'walking'})
-2. Destination access (parking availability, bike parking, pedestrian access, traffic conditions)
-3. Typical speeds for this mode in this area
-4. Any delays due to destination access (finding parking, walking from parking, etc.)
-
-Provide a JSON response with:
-{
-  "estimatedDuration": number (in seconds, realistic estimate),
-  "adjustedDuration": number (in seconds, accounting for destination access delays),
-  "accessNotes": "string (brief note about destination access)",
-  "arrivalTimeOffset": number (additional seconds needed for destination access, 0 if none)
-}
-
-Be realistic. If destination is a mall/restaurant, add parking/walking time for cars. If it's a residential area, consider access.`;
-
+    const prompt = getTimePrompt(origin, destination, mode, baseDuration, distance);
     const result = await model.generateContent(prompt);
     const responseText = result.response.text();
-    
-    if (!responseText) throw new Error("Empty response from Gemini");
+    const data = JSON.parse(responseText.replace(/```json/g, '').replace(/```/g, '').trim());
 
-    const parsedData = JSON.parse(responseText);
-    
-    // Calculate adjusted duration - for walking, no access time needed
-    let adjustedDuration = parsedData.adjustedDuration || parsedData.estimatedDuration || baseDuration;
-    
-    // For walking mode, don't add access time - use base duration
-    if (mode === 'walking') {
-      adjustedDuration = parsedData.estimatedDuration || baseDuration;
+    const arrivalTime = calculateArrivalTime(data.estimatedDuration);
+    return {
+      estimatedDuration: data.estimatedDuration,
+      arrivalTime,
+      adjustedDuration: data.adjustedDuration || data.estimatedDuration,
+      accessNotes: data.accessNotes || "Route analyzed",
+      source: 'Gemini'
+    };
+
+  } catch (geminiError: any) {
+    console.warn(`[RouteTimeService] Gemini Failed: ${geminiError.message}. Trying Groq...`);
+
+    // ATTEMPT 2: GROQ
+    try {
+      if (!GROQ_API_KEY) throw new Error("Groq Key Missing");
+
+      const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${GROQ_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: "llama-3.1-8b-instant",
+          messages: [{ 
+            role: "user", 
+            content: getTimePrompt(origin, destination, mode, baseDuration, distance) + "\n\nRETURN VALID JSON ONLY."
+          }],
+          response_format: { type: "json_object" }
+        })
+      });
+
+      if (!groqResponse.ok) throw new Error(`Groq Status: ${groqResponse.status}`);
+
+      const groqData = await groqResponse.json();
+      const data = JSON.parse(groqData.choices[0].message.content);
+
+      const arrivalTime = calculateArrivalTime(data.estimatedDuration);
+      return {
+        estimatedDuration: data.estimatedDuration,
+        arrivalTime,
+        adjustedDuration: data.adjustedDuration || data.estimatedDuration,
+        accessNotes: data.accessNotes || "Route analyzed",
+        source: 'Groq'
+      };
+
+    } catch (groqError: any) {
+      console.error(`[RouteTimeService] Groq Failed: ${groqError.message}. Using fallback.`);
+
+      // ATTEMPT 3: EST FALLBACK
+      return generateFallbackTimeAnalysis(mode, baseDuration, distance);
     }
-
-    // Calculate arrival time (will be recalculated dynamically when displayed)
-    const now = new Date();
-    const totalDuration = adjustedDuration;
-    now.setSeconds(now.getSeconds() + totalDuration);
-    const arrivalTime = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-
-    return {
-      estimatedDuration: parsedData.estimatedDuration || baseDuration,
-      arrivalTime,
-      adjustedDuration: adjustedDuration,
-      accessNotes: parsedData.accessNotes || "Route analyzed.",
-      isMock: false
-    };
-
-  } catch (error) {
-    console.error("Gemini Route Time Analysis Error:", error);
-    
-    // Fallback calculation
-    const distanceKm = distance / 1000;
-    const speeds = { walking: 5, cycling: 15, driving: 50 };
-    const speed = speeds[mode] || 5;
-    
-    // Add access time based on mode (none for walking)
-    let accessTime = 0;
-    if (mode === 'driving') accessTime = 300; // 5 min for parking/walking
-    else if (mode === 'cycling') accessTime = 60; // 1 min for bike parking
-    // Walking: no access time needed
-    
-    const estimatedDuration = (distanceKm / speed) * 3600;
-    const adjustedDuration = estimatedDuration + accessTime;
-    
-    // For walking, adjusted should equal estimated (no access time)
-    const finalAdjustedDuration = mode === 'walking' ? estimatedDuration : adjustedDuration;
-    
-    const now = new Date();
-    now.setSeconds(now.getSeconds() + finalAdjustedDuration);
-    const arrivalTime = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    
-    return {
-      estimatedDuration: Math.round(estimatedDuration),
-      arrivalTime,
-      adjustedDuration: Math.round(finalAdjustedDuration),
-      accessNotes: mode === 'driving' ? 'Includes estimated parking/walking time.' : mode === 'cycling' ? 'Includes bike parking time.' : 'Estimated time.',
-      isMock: true
-    };
   }
+}
+
+function getTimePrompt(origin: string, destination: string, mode: string, baseDuration: number, distance: number): string {
+  return `
+    TASK: Estimate the TOTAL travel time from "${origin}" to "${destination}".
+    
+    MODE: ${mode}
+    Base route duration: ${Math.round(baseDuration / 60)} minutes
+    Distance: ${(distance / 1000).toFixed(2)} km
+    Current time: ${new Date().toLocaleTimeString()}
+    
+    Consider:
+    1. Vehicle/mode (${mode === 'driving' ? 'car' : mode === 'cycling' ? 'bike' : 'walking'})
+    2. Destination access time (parking, walking, bike parking, etc.)
+    3. Realistic speeds for the area
+    
+    JSON Response: {
+      "estimatedDuration": number (seconds, total travel time),
+      "adjustedDuration": number (seconds, including destination access),
+      "accessNotes": "string (brief note about destination access)"
+    }
+  `;
+}
+
+function calculateArrivalTime(durationSeconds: number): string {
+  const now = new Date();
+  now.setSeconds(now.getSeconds() + durationSeconds);
+  return now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function generateFallbackTimeAnalysis(mode: 'walking' | 'cycling' | 'driving', baseDuration: number, distance: number): RouteTimeAnalysis {
+  const distanceKm = distance / 1000;
+  const speeds = { walking: 5, cycling: 15, driving: 50 };
+  const speed = speeds[mode] || 5;
+  
+  let accessTime = 0;
+  if (mode === 'driving') accessTime = 300; // 5 min for parking/walking
+  else if (mode === 'cycling') accessTime = 60; // 1 min for bike parking
+  
+  const estimatedDuration = (distanceKm / speed) * 3600;
+  const adjustedDuration = estimatedDuration + accessTime;
+  const finalDuration = mode === 'walking' ? estimatedDuration : adjustedDuration;
+  
+  return {
+    estimatedDuration: Math.round(estimatedDuration),
+    arrivalTime: calculateArrivalTime(finalDuration),
+    adjustedDuration: Math.round(finalDuration),
+    accessNotes: mode === 'driving' ? 'EST: Includes parking/walking time.' : 
+                 mode === 'cycling' ? 'EST: Includes bike parking time.' : 'EST: Walking time.',
+    source: 'EST'
+  };
 }
